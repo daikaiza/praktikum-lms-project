@@ -60,7 +60,7 @@ services:
       - FLASK_RUN_PORT=4000
       - FLASK_DEBUG=True 
       - PYTHONUNBUFFERED=1
-      - ACCESSIBLE_HOST=10.95.235.165
+      - ACCESSIBLE_HOST=localhost
       - USER_DATA_PATH=/app/user_data 
       - SOURCE_NOTEBOOK_PATH=/app/notebooks/praktikum_ml_iris.ipynb 
       - JUPYTER_IMAGE=ml-lab-single-user:latest
