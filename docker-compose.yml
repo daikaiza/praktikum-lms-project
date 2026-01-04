@@ -45,26 +45,36 @@ services:
     build: ./orchestrator
     ports:
       - "4000:4000"
-      - "8888-8988:8888" 
     depends_on:
-      - jupyter-image  
+      - jupyter-image
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./orchestrator/user_data:/app/user_data
-      - ./jupyter_image/praktikum_ml_iris.ipynb:/app/notebooks/praktikum_ml_iris.ipynb:ro 
       - ./orchestrator/app.py:/app/app.py
-      - ./orchestrator/requirements.txt:/app/requirements.txt
+      # wajib: agar orchestrator bisa bikin container lain
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # wajib: user_data di host ↔ /app/user_data di orchestrator
+      - ./orchestrator/user_data:/app/user_data
+
+      # source notebook (read-only)
+      - ./jupyter_image/praktikum_ml_iris.ipynb:/app/notebooks/praktikum_ml_iris.ipynb:ro
     environment:
       - FLASK_APP=app.py
       - FLASK_RUN_HOST=0.0.0.0
       - FLASK_RUN_PORT=4000
-      - FLASK_DEBUG=True 
+      - FLASK_DEBUG=True
       - PYTHONUNBUFFERED=1
+
+      # penting untuk URL Jupyter
       - ACCESSIBLE_HOST=localhost
-      - USER_DATA_PATH=/app/user_data 
-      - SOURCE_NOTEBOOK_PATH=/app/notebooks/praktikum_ml_iris.ipynb 
+
+      # path internal container
+      - SOURCE_NOTEBOOK_PATH=/app/notebooks/praktikum_ml_iris.ipynb
+      - NOTEBOOK_SOURCE_DIR=/app/notebooks/praktikum_ml_iris.ipynb
       - JUPYTER_IMAGE=ml-lab-single-user:latest
       - TZ=Asia/Jakarta
+      
+      - USER_DATA_PATH=/app/user_data
+      - HOST_USER_DATA_PATH=D:/praktikum-lms-project/orchestrator/user_data
     networks:
       - lms-net
 
