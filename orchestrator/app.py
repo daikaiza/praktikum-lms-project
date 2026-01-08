@@ -23,6 +23,8 @@ NOTEBOOK_SOURCE_DIR = os.environ.get(
 )
 ACCESSIBLE_HOST = os.environ.get("ACCESSIBLE_HOST", "localhost")
 JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE")
+FLASK_IMAGE = os.environ.get("FLASK_IMAGE")
+STREAMLIT_IMAGE = os.environ.get("STREAMLIT_IMAGE")
 
 DEFAULT_MEM_LIMIT = "256m"
 DEFAULT_CPU_NANO = int(0.1 * 1e9)
@@ -132,6 +134,89 @@ def deploy():
     return jsonify(
         success=True,
         url=f"http://{ACCESSIBLE_HOST}:{port}/lab/tree/{notebook}?token={token}",
+        group=safe_group,
+        host_port=port,
+    )
+
+@app.route("/deploy/flask", methods=["POST"])
+def deploy_flask():
+    if not client:
+        return jsonify(success=False, error="Docker unavailable"), 500
+
+    data = request.json or {}
+    group = data.get("group")
+
+    if not group:
+        return jsonify(success=False, error="Group required"), 400
+
+    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
+    container_name = f"praktikum_flask_{safe_group}"
+
+    try:
+        client.containers.get(container_name)
+        return jsonify(success=True, message="Container already running")
+    except errors.NotFound:
+        pass
+
+    container = client.containers.run(
+        FLASK_IMAGE,
+        name=container_name,
+        detach=True,
+        ports={"5000/tcp": None},
+        mem_limit=data.get("mem_limit", "512m"),
+        nano_cpus=int(float(data.get("cpu_limit", 0.5)) * 1e9),
+        restart_policy={"Name": "no"},
+    )
+
+    container.reload()
+    port = container.attrs["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
+
+    return jsonify(
+        success=True,
+        tool="flask",
+        url=f"http://{ACCESSIBLE_HOST}:{port}",
+        group=safe_group,
+        host_port=port,
+    )
+
+
+@app.route("/deploy/streamlit", methods=["POST"])
+def deploy_streamlit():
+    if not client:
+        return jsonify(success=False, error="Docker unavailable"), 500
+
+    data = request.json or {}
+    group = data.get("group")
+
+    if not group:
+        return jsonify(success=False, error="Group required"), 400
+
+    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
+    container_name = f"praktikum_streamlit_{safe_group}"
+
+    try:
+        client.containers.get(container_name)
+        return jsonify(success=True, message="Container already running")
+    except errors.NotFound:
+        pass
+
+    container = client.containers.run(
+        STREAMLIT_IMAGE,
+        name=container_name,
+        detach=True,
+        ports={"8501/tcp": None},
+        mem_limit=data.get("mem_limit", "512m"),
+        nano_cpus=int(float(data.get("cpu_limit", 0.5)) * 1e9),
+        restart_policy={"Name": "no"},
+    )
+
+    container.reload()
+    port = container.attrs["NetworkSettings"]["Ports"]["8501/tcp"][0]["HostPort"]
+
+    return jsonify(
+        success=True,
+        tool="streamlit",
+        url=f"http://{ACCESSIBLE_HOST}:{port}",
         group=safe_group,
         host_port=port,
     )

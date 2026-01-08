@@ -71,6 +71,8 @@ services:
       - SOURCE_NOTEBOOK_PATH=/app/notebooks/praktikum_ml_iris.ipynb
       - NOTEBOOK_SOURCE_DIR=/app/notebooks/praktikum_ml_iris.ipynb
       - JUPYTER_IMAGE=ml-lab-single-user:latest
+      - FLASK_IMAGE=praktikum-flask:latest
+      - STREAMLIT_IMAGE=praktikum-streamlit:latest
       - TZ=Asia/Jakarta
       
       - USER_DATA_PATH=/app/user_data
