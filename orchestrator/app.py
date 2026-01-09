@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from docker import from_env, errors
+import shutil
 import os
 import secrets
 import logging
@@ -19,8 +20,9 @@ except Exception as e:
 USER_DATA_BASE_PATH = os.environ.get("USER_DATA_PATH", "/app/user_data")
 NOTEBOOK_SOURCE_DIR = os.environ.get(
     "NOTEBOOK_SOURCE_DIR",
-    "/app/notebooks/praktikum_ml_iris.ipynb"
+    "/app/notebooks/"
 )
+DEFAULT_NOTEBOOK = "praktikum_ml_iris.ipynb"
 ACCESSIBLE_HOST = os.environ.get("ACCESSIBLE_HOST", "localhost")
 JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE")
 FLASK_IMAGE = os.environ.get("FLASK_IMAGE")
@@ -47,45 +49,35 @@ def ensure_notebook_exists(dest_path, notebook_name):
     if os.path.exists(dest_path):
         return
 
-    if not os.path.exists(src):
+    if not os.path.isfile(src):
         raise FileNotFoundError(f"Notebook source not found: {src}")
 
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     shutil.copy(src, dest_path)
 
     try:
-        os.chown(dest_path, 1000, 100)  # jovyan
+        os.chown(dest_path, 1000, 100)
     except Exception:
         pass
-# ================= ROUTES =================
-@app.route("/deploy", methods=["POST"])
-def deploy():
-    if not client:
-        return jsonify(success=False, error="Docker unavailable"), 500
-
-    data = request.json or {}
-    group = data.get("group")
-    notebook = data.get("notebook", "praktikum_ml_iris.ipynb")
-
-    if not group:
-        return jsonify(success=False, error="Group required"), 400
-
-    # sanitasi nama group (AMAN untuk path & container)
-    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
+def deploy_jupyter_internal(data, safe_group):
+    notebook = data.get("notebook", DEFAULT_NOTEBOOK)
 
     container_name = f"praktikum_{safe_group}"
 
     group_dir = os.path.join(USER_DATA_BASE_PATH, safe_group)
     work_dir = os.path.join(group_dir, "work")
-    host_work_dir = os.path.join(HOST_USER_DATA_PATH, group, "work")
+    host_work_dir = os.path.join(HOST_USER_DATA_PATH, safe_group, "work")
+
     dest_notebook_path = os.path.join(work_dir, notebook)
     token_file = os.path.join(group_dir, ".jupyter_token")
 
     os.makedirs(work_dir, exist_ok=True)
-    os.chown(work_dir, 1000, 100)
+    try:
+        os.chown(work_dir, 1000, 100)
+    except Exception:
+        pass
 
     ensure_notebook_exists(dest_notebook_path, notebook)
-
     token = get_or_create_token(token_file)
 
     try:
@@ -94,28 +86,21 @@ def deploy():
     except errors.NotFound:
         pass
 
-    volume_config = {
-        host_work_dir: {
-            "bind": "/home/jovyan/work",
-            "mode": "rw"
-        }
-    }
-
-    # resource limit (default aman)
-    mem_limit = data.get("mem_limit", "1g")
-    cpu_limit = data.get("cpu_limit", 1)
-    nano_cpus = int(cpu_limit * 1_000_000_000)
-
     container = client.containers.run(
         JUPYTER_IMAGE,
         name=container_name,
         detach=True,
         ports={"8888/tcp": None},
-        volumes=volume_config,
+        volumes={
+            host_work_dir: {
+                "bind": "/home/jovyan/work",
+                "mode": "rw",
+            }
+        },
         command=[
             "start-notebook.sh",
             "--ServerApp.root_dir=/home/jovyan/work",
-            f"--ServerApp.token={token}"
+            f"--ServerApp.token={token}",
         ],
         environment={
             "JUPYTER_ENABLE_LAB": "yes",
@@ -123,8 +108,6 @@ def deploy():
             "NB_UID": "1000",
             "CHOWN_HOME": "yes",
         },
-        mem_limit=mem_limit,
-        nano_cpus=nano_cpus,
         restart_policy={"Name": "no"},
     )
 
@@ -134,9 +117,101 @@ def deploy():
     return jsonify(
         success=True,
         url=f"http://{ACCESSIBLE_HOST}:{port}/lab/tree/{notebook}?token={token}",
-        group=safe_group,
         host_port=port,
+        group=safe_group,
     )
+# ================= ROUTES =================
+@app.route("/deploy", methods=["POST"])
+def deploy():
+    if not client:
+        return jsonify(success=False, error="Docker unavailable"), 500
+
+    data = request.json or {}
+    group = data.get("group")
+    tool = data.get("tool", "jupyter")  # default tetap jupyter
+
+    if not group:
+        return jsonify(success=False, error="Group required"), 400
+
+    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
+
+    mem_limit = data.get("mem_limit", "512m")
+    cpu_limit = float(data.get("cpu_limit", 0.5))
+    nano_cpus = int(cpu_limit * 1e9)
+
+    # =======================
+    # JUPYTER
+    # =======================
+    if tool == "jupyter":
+        return deploy_jupyter_internal(data, safe_group)
+
+    # =======================
+    # FLASK
+    # =======================
+    if tool == "flask":
+        container_name = f"praktikum_flask_{safe_group}"
+
+        try:
+            client.containers.get(container_name)
+            return jsonify(success=True, message="Container already running")
+        except errors.NotFound:
+            pass
+
+        container = client.containers.run(
+            FLASK_IMAGE,
+            name=container_name,
+            detach=True,
+            ports={"5000/tcp": None},
+            mem_limit=mem_limit,
+            nano_cpus=nano_cpus,
+            restart_policy={"Name": "no"},
+        )
+
+        container.reload()
+        port = container.attrs["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
+
+        return jsonify(
+            success=True,
+            tool="flask",
+            url=f"http://{ACCESSIBLE_HOST}:{port}",
+            group=safe_group,
+            host_port=port,
+        )
+
+    # =======================
+    # STREAMLIT
+    # =======================
+    if tool == "streamlit":
+        container_name = f"praktikum_streamlit_{safe_group}"
+
+        try:
+            client.containers.get(container_name)
+            return jsonify(success=True, message="Container already running")
+        except errors.NotFound:
+            pass
+
+        container = client.containers.run(
+            STREAMLIT_IMAGE,
+            name=container_name,
+            detach=True,
+            ports={"8501/tcp": None},
+            mem_limit=mem_limit,
+            nano_cpus=nano_cpus,
+            restart_policy={"Name": "no"},
+        )
+
+        container.reload()
+        port = container.attrs["NetworkSettings"]["Ports"]["8501/tcp"][0]["HostPort"]
+
+        return jsonify(
+            success=True,
+            tool="streamlit",
+            url=f"http://{ACCESSIBLE_HOST}:{port}",
+            group=safe_group,
+            host_port=port,
+        )
+
+    return jsonify(success=False, error=f"Unknown tool: {tool}"), 400
 
 @app.route("/deploy/flask", methods=["POST"])
 def deploy_flask():
