@@ -9,6 +9,15 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    app.logger.exception(e)
+
+    return jsonify(
+        success=False,
+        error=str(e)
+    ), 500
+
 try:
     client = from_env()
     logging.info("Docker client initialized")
@@ -21,6 +30,14 @@ USER_DATA_BASE_PATH = os.environ.get("USER_DATA_PATH", "/app/user_data")
 NOTEBOOK_SOURCE_DIR = os.environ.get(
     "NOTEBOOK_SOURCE_DIR",
     "/app/notebooks/"
+)
+FLASK_MODULE_SOURCE_DIR = os.environ.get(
+    "FLASK_MODULE_SOURCE_DIR",
+    "/app/flask_modules"
+)
+STREAMLIT_SOURCE_DIR = os.environ.get(
+    "STREAMLIT_SOURCE_DIR",
+    "/app/streamlit_apps"
 )
 DEFAULT_NOTEBOOK = "praktikum_ml_iris.ipynb"
 ACCESSIBLE_HOST = os.environ.get("ACCESSIBLE_HOST", "localhost")
@@ -300,10 +317,13 @@ def deploy_streamlit():
 def stop():
     data = request.json or {}
     group = data.get("group")
+
     if not group:
         return jsonify(success=False, error="Group required"), 400
 
-    name = f"praktikum_{group}"
+    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
+    name = f"praktikum_{safe_group}"
+
     try:
         c = client.containers.get(name)
         c.stop()
