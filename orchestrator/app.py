@@ -49,6 +49,22 @@ DEFAULT_MEM_LIMIT = "256m"
 DEFAULT_CPU_NANO = int(0.1 * 1e9)
 
 HOST_USER_DATA_PATH = os.environ["HOST_USER_DATA_PATH"]
+# ================= MODULE REGISTRY =================
+
+JUPYTER_MODULES = {
+    "iris": "praktikum_ml_iris.ipynb",
+    "ml_telekomunikasi": "ML_Telekomunikasi_Praktikum.ipynb",
+}
+
+FLASK_MODULES = {
+    "default": "praktikum_api.py",
+    "api2": "praktikum_api2.py",
+}
+
+STREAMLIT_MODULES = {
+    "default": "praktikum_streamlit.py",
+    "streamlit2": "praktikum_streamlit2.py",
+}
 
 # ================= HELPERS =================
 def get_or_create_token(token_file):
@@ -77,7 +93,12 @@ def ensure_notebook_exists(dest_path, notebook_name):
     except Exception:
         pass
 def deploy_jupyter_internal(data, safe_group):
-    notebook = data.get("notebook", DEFAULT_NOTEBOOK)
+    module = data.get("module", "iris")
+
+    if module not in JUPYTER_MODULES:
+        return jsonify(success=False, error="Unknown Jupyter module"), 400
+
+    notebook = JUPYTER_MODULES[module]
 
     container_name = f"praktikum_{safe_group}"
 
@@ -166,6 +187,13 @@ def deploy():
     # FLASK
     # =======================
     if tool == "flask":
+        module = data.get("module", "default")
+
+        if module not in FLASK_MODULES:
+            return jsonify(success=False, error="Unknown Flask module"), 400
+
+        flask_app_file = FLASK_MODULES[module]
+
         container_name = f"praktikum_flask_{safe_group}"
 
         try:
@@ -181,6 +209,9 @@ def deploy():
             ports={"5000/tcp": None},
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
+            environment={
+                "FLASK_APP_FILE": flask_app_file
+            },
             restart_policy={"Name": "no"},
         )
 
@@ -199,6 +230,12 @@ def deploy():
     # STREAMLIT
     # =======================
     if tool == "streamlit":
+        module = data.get("module", "default")
+
+        if module not in STREAMLIT_MODULES:
+            return jsonify(success=False, error="Unknown Streamlit module"), 400
+
+        streamlit_file = STREAMLIT_MODULES[module]
         container_name = f"praktikum_streamlit_{safe_group}"
 
         try:
@@ -214,6 +251,9 @@ def deploy():
             ports={"8501/tcp": None},
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
+            environment={
+                "STREAMLIT_APP_FILE": streamlit_file
+            },
             restart_policy={"Name": "no"},
         )
 

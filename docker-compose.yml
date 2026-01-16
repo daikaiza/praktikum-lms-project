@@ -56,7 +56,7 @@ services:
       - ./orchestrator/user_data:/app/user_data
 
       # source notebook (read-only)
-      - ./jupyter_image/praktikum_ml_iris.ipynb:/app/notebooks/praktikum_ml_iris.ipynb:ro
+      - ./orchestrator/notebooks:/app/notebooks:ro
     environment:
       - FLASK_APP=app.py
       - FLASK_RUN_HOST=0.0.0.0
