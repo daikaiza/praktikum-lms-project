@@ -12,11 +12,7 @@ app = Flask(__name__)
 @app.errorhandler(Exception)
 def handle_exception(e):
     app.logger.exception(e)
-
-    return jsonify(
-        success=False,
-        error=str(e)
-    ), 500
+    return jsonify(success=False, error=str(e)), 500
 
 try:
     client = from_env()
@@ -25,97 +21,112 @@ except Exception as e:
     logging.error(f"Docker init failed: {e}")
     client = None
 
+
 # ================= CONFIG =================
+
 USER_DATA_BASE_PATH = os.environ.get("USER_DATA_PATH", "/app/user_data")
-NOTEBOOK_SOURCE_DIR = os.environ.get(
-    "NOTEBOOK_SOURCE_DIR",
-    "/app/notebooks/"
+
+MODULE_BASE_PATH = os.environ.get(
+    "MODULE_BASE_PATH",
+    "/app/modules"
 )
-FLASK_MODULE_SOURCE_DIR = os.environ.get(
-    "FLASK_MODULE_SOURCE_DIR",
-    "/app/flask_modules"
-)
-STREAMLIT_SOURCE_DIR = os.environ.get(
-    "STREAMLIT_SOURCE_DIR",
-    "/app/streamlit_apps"
-)
-DEFAULT_NOTEBOOK = "praktikum_ml_iris.ipynb"
+
+JUPYTER_MODULE_DIR = os.path.join(MODULE_BASE_PATH, "jupyter")
+FLASK_MODULE_DIR = os.path.join(MODULE_BASE_PATH, "flask")
+STREAMLIT_MODULE_DIR = os.path.join(MODULE_BASE_PATH, "streamlit")
+
 ACCESSIBLE_HOST = os.environ.get("ACCESSIBLE_HOST", "localhost")
+
 JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE")
 FLASK_IMAGE = os.environ.get("FLASK_IMAGE")
 STREAMLIT_IMAGE = os.environ.get("STREAMLIT_IMAGE")
 
+HOST_USER_DATA_PATH = os.environ["HOST_USER_DATA_PATH"]
+
 DEFAULT_MEM_LIMIT = "256m"
 DEFAULT_CPU_NANO = int(0.1 * 1e9)
 
-HOST_USER_DATA_PATH = os.environ["HOST_USER_DATA_PATH"]
-# ================= MODULE REGISTRY =================
 
-JUPYTER_MODULES = {
-    "iris": "praktikum_ml_iris.ipynb",
-    "ml_telekomunikasi": "ML_Telekomunikasi_Praktikum.ipynb",
-}
+# ================= AUTO DISCOVERY =================
 
-FLASK_MODULES = {
-    "default": "praktikum_api.py",
-    "api2": "praktikum_api2.py",
-}
+def discover_modules():
 
-STREAMLIT_MODULES = {
-    "default": "praktikum_streamlit.py",
-    "streamlit2": "praktikum_streamlit2.py",
-}
+    modules = {
+        "jupyter": [],
+        "flask": [],
+        "streamlit": []
+    }
+
+    if os.path.exists(JUPYTER_MODULE_DIR):
+        modules["jupyter"] = [
+            f for f in os.listdir(JUPYTER_MODULE_DIR)
+            if f.endswith(".ipynb")
+        ]
+
+    if os.path.exists(FLASK_MODULE_DIR):
+        modules["flask"] = [
+            f for f in os.listdir(FLASK_MODULE_DIR)
+            if f.endswith(".py")
+        ]
+
+    if os.path.exists(STREAMLIT_MODULE_DIR):
+        modules["streamlit"] = [
+            f for f in os.listdir(STREAMLIT_MODULE_DIR)
+            if f.endswith(".py")
+        ]
+
+    return modules
+
 
 # ================= HELPERS =================
+
 def get_or_create_token(token_file):
+
     if os.path.exists(token_file):
         return open(token_file).read().strip()
 
     token = secrets.token_hex(16)
+
     with open(token_file, "w") as f:
         f.write(token)
-    os.chown(token_file, 1000, 100)
-    return token
-def ensure_notebook_exists(dest_path, notebook_name):
-    src = os.path.join(NOTEBOOK_SOURCE_DIR, notebook_name)
-
-    if os.path.exists(dest_path):
-        return
-
-    if not os.path.isfile(src):
-        raise FileNotFoundError(f"Notebook source not found: {src}")
-
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    shutil.copy(src, dest_path)
 
     try:
-        os.chown(dest_path, 1000, 100)
-    except Exception:
+        os.chown(token_file, 1000, 100)
+    except:
         pass
+
+    return token
+
+
+# ================= JUPYTER DEPLOY =================
+
 def deploy_jupyter_internal(data, safe_group):
-    module = data.get("module", "iris")
 
-    if module not in JUPYTER_MODULES:
-        return jsonify(success=False, error="Unknown Jupyter module"), 400
+    module = data.get("module")
 
-    notebook = JUPYTER_MODULES[module]
+    if not module:
+        return jsonify(success=False, error="Module required"), 400
+
+    src_notebook = os.path.join(JUPYTER_MODULE_DIR, module)
+
+    if not os.path.isfile(src_notebook):
+        return jsonify(success=False, error="Notebook not found"), 404
 
     container_name = f"praktikum_{safe_group}"
 
     group_dir = os.path.join(USER_DATA_BASE_PATH, safe_group)
     work_dir = os.path.join(group_dir, "work")
+
     host_work_dir = os.path.join(HOST_USER_DATA_PATH, safe_group, "work")
 
-    dest_notebook_path = os.path.join(work_dir, notebook)
-    token_file = os.path.join(group_dir, ".jupyter_token")
-
     os.makedirs(work_dir, exist_ok=True)
-    try:
-        os.chown(work_dir, 1000, 100)
-    except Exception:
-        pass
 
-    ensure_notebook_exists(dest_notebook_path, notebook)
+    dest_notebook = os.path.join(work_dir, module)
+
+    if (not os.path.exists(dest_notebook)) or os.path.getsize(dest_notebook) == 0:
+        shutil.copy(src_notebook, dest_notebook)
+
+    token_file = os.path.join(group_dir, ".jupyter_token")
     token = get_or_create_token(token_file)
 
     try:
@@ -132,7 +143,7 @@ def deploy_jupyter_internal(data, safe_group):
         volumes={
             host_work_dir: {
                 "bind": "/home/jovyan/work",
-                "mode": "rw",
+                "mode": "rw"
             }
         },
         command=[
@@ -140,59 +151,57 @@ def deploy_jupyter_internal(data, safe_group):
             "--ServerApp.root_dir=/home/jovyan/work",
             f"--ServerApp.token={token}",
         ],
-        environment={
-            "JUPYTER_ENABLE_LAB": "yes",
-            "NB_USER": "jovyan",
-            "NB_UID": "1000",
-            "CHOWN_HOME": "yes",
-        },
-        restart_policy={"Name": "no"},
+        restart_policy={"Name": "no"}
     )
 
     container.reload()
+
     port = container.attrs["NetworkSettings"]["Ports"]["8888/tcp"][0]["HostPort"]
 
     return jsonify(
         success=True,
-        url=f"http://{ACCESSIBLE_HOST}:{port}/lab/tree/{notebook}?token={token}",
+        tool="jupyter",
+        url=f"http://{ACCESSIBLE_HOST}:{port}/lab/tree/{module}?token={token}",
         host_port=port,
-        group=safe_group,
+        group=safe_group
     )
-# ================= ROUTES =================
+
+
+# ================= DEPLOY ROUTE =================
+
 @app.route("/deploy", methods=["POST"])
 def deploy():
+
     if not client:
         return jsonify(success=False, error="Docker unavailable"), 500
 
     data = request.json or {}
+
     group = data.get("group")
-    tool = data.get("tool", "jupyter")  # default tetap jupyter
+    tool = data.get("tool")
 
     if not group:
         return jsonify(success=False, error="Group required"), 400
 
     safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
 
-    mem_limit = data.get("mem_limit", "512m")
+    mem_limit = data.get("mem_limit", DEFAULT_MEM_LIMIT)
     cpu_limit = float(data.get("cpu_limit", 0.5))
     nano_cpus = int(cpu_limit * 1e9)
 
-    # =======================
-    # JUPYTER
-    # =======================
+    # ================= JUPYTER =================
+
     if tool == "jupyter":
         return deploy_jupyter_internal(data, safe_group)
 
-    # =======================
-    # FLASK
-    # =======================
+    # ================= FLASK =================
+
     if tool == "flask":
-        module = data.get("module", "default")
 
-        if module not in FLASK_MODULES:
-            return jsonify(success=False, error="Unknown Flask module"), 400
+        module = data.get("module")
 
-        flask_app_file = FLASK_MODULES[module]
+        if not module:
+            return jsonify(success=False, error="Module required"), 400
 
         container_name = f"praktikum_flask_{safe_group}"
 
@@ -210,12 +219,13 @@ def deploy():
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
             environment={
-                "FLASK_APP_FILE": flask_app_file
+                "FLASK_APP_FILE": module
             },
-            restart_policy={"Name": "no"},
+            restart_policy={"Name": "no"}
         )
 
         container.reload()
+
         port = container.attrs["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
 
         return jsonify(
@@ -223,19 +233,18 @@ def deploy():
             tool="flask",
             url=f"http://{ACCESSIBLE_HOST}:{port}",
             group=safe_group,
-            host_port=port,
+            host_port=port
         )
 
-    # =======================
-    # STREAMLIT
-    # =======================
+    # ================= STREAMLIT =================
+
     if tool == "streamlit":
-        module = data.get("module", "default")
 
-        if module not in STREAMLIT_MODULES:
-            return jsonify(success=False, error="Unknown Streamlit module"), 400
+        module = data.get("module")
 
-        streamlit_file = STREAMLIT_MODULES[module]
+        if not module:
+            return jsonify(success=False, error="Module required"), 400
+
         container_name = f"praktikum_streamlit_{safe_group}"
 
         try:
@@ -252,12 +261,13 @@ def deploy():
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
             environment={
-                "STREAMLIT_APP_FILE": streamlit_file
+                "STREAMLIT_APP_FILE": module
             },
-            restart_policy={"Name": "no"},
+            restart_policy={"Name": "no"}
         )
 
         container.reload()
+
         port = container.attrs["NetworkSettings"]["Ports"]["8501/tcp"][0]["HostPort"]
 
         return jsonify(
@@ -265,96 +275,28 @@ def deploy():
             tool="streamlit",
             url=f"http://{ACCESSIBLE_HOST}:{port}",
             group=safe_group,
-            host_port=port,
+            host_port=port
         )
 
-    return jsonify(success=False, error=f"Unknown tool: {tool}"), 400
+    return jsonify(success=False, error="Unknown tool"), 400
 
-@app.route("/deploy/flask", methods=["POST"])
-def deploy_flask():
-    if not client:
-        return jsonify(success=False, error="Docker unavailable"), 500
 
-    data = request.json or {}
-    group = data.get("group")
+# ================= MODULE LIST =================
 
-    if not group:
-        return jsonify(success=False, error="Group required"), 400
-
-    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
-    container_name = f"praktikum_flask_{safe_group}"
-
-    try:
-        client.containers.get(container_name)
-        return jsonify(success=True, message="Container already running")
-    except errors.NotFound:
-        pass
-
-    container = client.containers.run(
-        FLASK_IMAGE,
-        name=container_name,
-        detach=True,
-        ports={"5000/tcp": None},
-        mem_limit=data.get("mem_limit", "512m"),
-        nano_cpus=int(float(data.get("cpu_limit", 0.5)) * 1e9),
-        restart_policy={"Name": "no"},
-    )
-
-    container.reload()
-    port = container.attrs["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
+@app.route("/modules", methods=["GET"])
+def list_modules():
 
     return jsonify(
         success=True,
-        tool="flask",
-        url=f"http://{ACCESSIBLE_HOST}:{port}",
-        group=safe_group,
-        host_port=port,
+        modules=discover_modules()
     )
 
 
-@app.route("/deploy/streamlit", methods=["POST"])
-def deploy_streamlit():
-    if not client:
-        return jsonify(success=False, error="Docker unavailable"), 500
-
-    data = request.json or {}
-    group = data.get("group")
-
-    if not group:
-        return jsonify(success=False, error="Group required"), 400
-
-    safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
-    container_name = f"praktikum_streamlit_{safe_group}"
-
-    try:
-        client.containers.get(container_name)
-        return jsonify(success=True, message="Container already running")
-    except errors.NotFound:
-        pass
-
-    container = client.containers.run(
-        STREAMLIT_IMAGE,
-        name=container_name,
-        detach=True,
-        ports={"8501/tcp": None},
-        mem_limit=data.get("mem_limit", "512m"),
-        nano_cpus=int(float(data.get("cpu_limit", 0.5)) * 1e9),
-        restart_policy={"Name": "no"},
-    )
-
-    container.reload()
-    port = container.attrs["NetworkSettings"]["Ports"]["8501/tcp"][0]["HostPort"]
-
-    return jsonify(
-        success=True,
-        tool="streamlit",
-        url=f"http://{ACCESSIBLE_HOST}:{port}",
-        group=safe_group,
-        host_port=port,
-    )
+# ================= STOP =================
 
 @app.route("/stop", methods=["POST"])
 def stop():
+
     data = request.json or {}
     group = data.get("group")
 
@@ -362,19 +304,30 @@ def stop():
         return jsonify(success=False, error="Group required"), 400
 
     safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
-    name = f"praktikum_{safe_group}"
 
-    try:
-        c = client.containers.get(name)
-        c.stop()
-        c.remove()
-        return jsonify(success=True)
-    except errors.NotFound:
-        return jsonify(success=True)
+    names = [
+        f"praktikum_{safe_group}",
+        f"praktikum_flask_{safe_group}",
+        f"praktikum_streamlit_{safe_group}",
+    ]
+
+    for name in names:
+        try:
+            c = client.containers.get(name)
+            c.stop()
+            c.remove()
+        except errors.NotFound:
+            pass
+
+    return jsonify(success=True)
+
+
+# ================= HEALTH =================
 
 @app.route("/health")
 def health():
     return jsonify(status="healthy", docker=bool(client))
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=4000, debug=True)

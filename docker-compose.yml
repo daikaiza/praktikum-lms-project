@@ -57,6 +57,8 @@ services:
 
       # source notebook (read-only)
       - ./orchestrator/notebooks:/app/notebooks:ro
+
+      - ./orchestrator/modules:/app/modules
     environment:
       - FLASK_APP=app.py
       - FLASK_RUN_HOST=0.0.0.0
