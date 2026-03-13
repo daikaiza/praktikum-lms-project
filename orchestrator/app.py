@@ -25,11 +25,16 @@ except Exception as e:
 # ================= CONFIG =================
 
 USER_DATA_BASE_PATH = os.environ.get("USER_DATA_PATH", "/app/user_data")
+MODULE_BASE_PATH = os.environ.get("MODULE_BASE_PATH", "/app/modules")
 
-MODULE_BASE_PATH = os.environ.get(
-    "MODULE_BASE_PATH",
-    "/app/modules"
-)
+HOST_USER_DATA_PATH = os.environ["HOST_USER_DATA_PATH"]
+HOST_MODULES_PATH = os.environ.get("HOST_MODULES_PATH", MODULE_BASE_PATH)
+
+UPLOAD_FOLDERS = {
+    "jupyter": os.path.join(MODULE_BASE_PATH, "jupyter"),
+    "flask": os.path.join(MODULE_BASE_PATH, "flask"),
+    "streamlit": os.path.join(MODULE_BASE_PATH, "streamlit"),
+}
 
 JUPYTER_MODULE_DIR = os.path.join(MODULE_BASE_PATH, "jupyter")
 FLASK_MODULE_DIR = os.path.join(MODULE_BASE_PATH, "flask")
@@ -41,44 +46,34 @@ JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE")
 FLASK_IMAGE = os.environ.get("FLASK_IMAGE")
 STREAMLIT_IMAGE = os.environ.get("STREAMLIT_IMAGE")
 
-HOST_USER_DATA_PATH = os.environ["HOST_USER_DATA_PATH"]
-
 DEFAULT_MEM_LIMIT = "256m"
-DEFAULT_CPU_NANO = int(0.1 * 1e9)
 
 
 # ================= AUTO DISCOVERY =================
 
 def discover_modules():
 
-    modules = {
-        "jupyter": [],
-        "flask": [],
-        "streamlit": []
-    }
+    modules = {"jupyter": [], "flask": [], "streamlit": []}
 
     if os.path.exists(JUPYTER_MODULE_DIR):
         modules["jupyter"] = [
-            f for f in os.listdir(JUPYTER_MODULE_DIR)
-            if f.endswith(".ipynb")
+            f for f in os.listdir(JUPYTER_MODULE_DIR) if f.endswith(".ipynb")
         ]
 
     if os.path.exists(FLASK_MODULE_DIR):
         modules["flask"] = [
-            f for f in os.listdir(FLASK_MODULE_DIR)
-            if f.endswith(".py")
+            f for f in os.listdir(FLASK_MODULE_DIR) if f.endswith(".py")
         ]
 
     if os.path.exists(STREAMLIT_MODULE_DIR):
         modules["streamlit"] = [
-            f for f in os.listdir(STREAMLIT_MODULE_DIR)
-            if f.endswith(".py")
+            f for f in os.listdir(STREAMLIT_MODULE_DIR) if f.endswith(".py")
         ]
 
     return modules
 
 
-# ================= HELPERS =================
+# ================= TOKEN =================
 
 def get_or_create_token(token_file):
 
@@ -98,7 +93,7 @@ def get_or_create_token(token_file):
     return token
 
 
-# ================= JUPYTER DEPLOY =================
+# ================= JUPYTER =================
 
 def deploy_jupyter_internal(data, safe_group):
 
@@ -167,7 +162,7 @@ def deploy_jupyter_internal(data, safe_group):
     )
 
 
-# ================= DEPLOY ROUTE =================
+# ================= DEPLOY =================
 
 @app.route("/deploy", methods=["POST"])
 def deploy():
@@ -189,20 +184,14 @@ def deploy():
     cpu_limit = float(data.get("cpu_limit", 0.5))
     nano_cpus = int(cpu_limit * 1e9)
 
-    # ================= JUPYTER =================
-
+    # ===== JUPYTER =====
     if tool == "jupyter":
         return deploy_jupyter_internal(data, safe_group)
 
-    # ================= FLASK =================
-
+    # ===== FLASK =====
     if tool == "flask":
 
         module = data.get("module")
-
-        if not module:
-            return jsonify(success=False, error="Module required"), 400
-
         container_name = f"praktikum_flask_{safe_group}"
 
         try:
@@ -218,8 +207,14 @@ def deploy():
             ports={"5000/tcp": None},
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
+            volumes={
+                HOST_MODULES_PATH: {
+                    "bind": "/app/modules",
+                    "mode": "ro"
+                }
+            },
             environment={
-                "FLASK_APP_FILE": module
+                "FLASK_APP_FILE": f"/app/modules/flask/{module}"
             },
             restart_policy={"Name": "no"}
         )
@@ -236,15 +231,10 @@ def deploy():
             host_port=port
         )
 
-    # ================= STREAMLIT =================
-
+    # ===== STREAMLIT =====
     if tool == "streamlit":
 
         module = data.get("module")
-
-        if not module:
-            return jsonify(success=False, error="Module required"), 400
-
         container_name = f"praktikum_streamlit_{safe_group}"
 
         try:
@@ -260,8 +250,14 @@ def deploy():
             ports={"8501/tcp": None},
             mem_limit=mem_limit,
             nano_cpus=nano_cpus,
+            volumes={
+                HOST_MODULES_PATH: {
+                    "bind": "/app/modules",
+                    "mode": "ro"
+                }
+            },
             environment={
-                "STREAMLIT_APP_FILE": module
+                "STREAMLIT_APP_FILE": f"/app/modules/streamlit/{module}"
             },
             restart_policy={"Name": "no"}
         )
@@ -281,15 +277,11 @@ def deploy():
     return jsonify(success=False, error="Unknown tool"), 400
 
 
-# ================= MODULE LIST =================
+# ================= MODULES =================
 
-@app.route("/modules", methods=["GET"])
+@app.route("/modules")
 def list_modules():
-
-    return jsonify(
-        success=True,
-        modules=discover_modules()
-    )
+    return jsonify(success=True, modules=discover_modules())
 
 
 # ================= STOP =================
@@ -299,9 +291,6 @@ def stop():
 
     data = request.json or {}
     group = data.get("group")
-
-    if not group:
-        return jsonify(success=False, error="Group required"), 400
 
     safe_group = "".join(c for c in group if c.isalnum() or c in "-_")
 
@@ -322,11 +311,26 @@ def stop():
     return jsonify(success=True)
 
 
-# ================= HEALTH =================
+# ================= UPLOAD =================
 
-@app.route("/health")
-def health():
-    return jsonify(status="healthy", docker=bool(client))
+@app.route("/upload", methods=["POST"])
+def upload_module():
+
+    tool = request.form.get("tool")
+
+    if tool not in UPLOAD_FOLDERS:
+        return {"success": False, "error": "Invalid tool"}, 400
+
+    if "file" not in request.files:
+        return {"success": False, "error": "No file uploaded"}, 400
+
+    file = request.files["file"]
+
+    save_path = os.path.join(UPLOAD_FOLDERS[tool], file.filename)
+
+    file.save(save_path)
+
+    return {"success": True, "tool": tool, "filename": file.filename}
 
 
 if __name__ == "__main__":

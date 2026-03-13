@@ -81,6 +81,7 @@ services:
       
       - USER_DATA_PATH=/app/user_data
       - HOST_USER_DATA_PATH=D:/praktikum-lms-project/orchestrator/user_data
+      - HOST_MODULES_PATH=D:/praktikum-lms-project/orchestrator/modules
     networks:
       - lms-net
 
